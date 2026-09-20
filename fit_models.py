@@ -161,7 +161,7 @@ def run_model_comparison(data_path="data/mock_trajectory.csv", t_max=10.0, L_val
 
     results = {}
     print("=" * 80)
-    print(f"正在对时序数据执行 M1~M4 动力学全局拟合 (数据点数: {len(t_eval)}, 拟合时长: {t_max}s)...")
+    print(f"正在对时序数据执行 M1~M4 动力学全局拟合 (数据点数: {len(t_data)}, 拟合时长: {t_max}s)...")
     print("=" * 80)
 
     for name, cfg in model_configs.items():
