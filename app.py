@@ -9,8 +9,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-# 导入底层核心模块 (统一放在顶部，杜绝局部缩进错误)
-from track import track_pendulum_video
+# 导入底层核心模块
 from fit_models import run_model_comparison
 from sindy_discover import discover_governing_equation, run_identifiability_ablation
 from pendulum_theory import small_angle_period, exact_period
@@ -46,8 +45,9 @@ csv_path = None
 # ----------------- 模式 1：数字仿真演练 -----------------
 if data_mode == "数字仿真演练模式 (无需视频，一键生成)":
     st.subheader("1. 数字靶场：动力学仿真生成")
-    st.info("💡 当前为无视频演练模式，系统将利用 Runge-Kutta 数值求解常微分方程，生成带阻尼和高斯噪声的单摆轨迹供算法验证。")
-    
+    st.info(
+        "💡 当前为无视频演练模式，系统将利用 Runge-Kutta 数值求解常微分方程，生成带阻尼和高斯噪声的单摆轨迹供算法验证。")
+
     col_sim_1, col_sim_2 = st.columns([3, 1])
     with col_sim_1:
         sim_angle = st.slider("初始释放角 θ₀ (度)", min_value=5.0, max_value=80.0, value=60.0, step=5.0)
@@ -56,6 +56,7 @@ if data_mode == "数字仿真演练模式 (无需视频，一键生成)":
 
     if btn_run_sim:
         with st.spinner("正在生成仿真轨迹并运行后端算法链路..."):
+            # 1. 生成仿真数据
             sim_df, meta_params = generate_simulation_data(
                 theta0_deg=sim_angle,
                 L=L_input,
@@ -74,7 +75,7 @@ if data_mode == "数字仿真演练模式 (无需视频，一键生成)":
 else:
     st.subheader("1. 实验输入：拖拽上传慢动作视频")
     uploaded_file = st.file_uploader(
-        "拖入手机拍摄的大摆角单摆慢动作视频 (.mp4)", 
+        "拖入手机拍摄的大摆角单摆慢动作视频 (.mp4)",
         type=["mp4", "mov", "avi"],
         help="建议使用 120 或 240 fps 录制，初始摆角 ≤ 80°"
     )
@@ -93,6 +94,8 @@ else:
 
         if btn_run_video:
             with st.spinner("正在逐帧提取摆球亚像素质心与角度..."):
+                from track import track_pendulum_video
+
                 csv_path = "data/theta_t.csv"
                 df_active = track_pendulum_video(video_temp_path, output_csv=csv_path, show_preview=False)
                 st.session_state["active_df"] = df_active
@@ -100,12 +103,13 @@ else:
     else:
         st.info("💡 提示：实拍视频模式下请拖入 .mp4 文件；若目前暂无视频，可在左侧切换为【数字仿真演练模式】先睹为快。")
 
-# ----------------- 成果展示区 -----------------
+# ----------------- 成果展示区 (只要触发过运行就展示) -----------------
 if "active_df" in st.session_state:
     df_data = st.session_state["active_df"]
     target_csv = st.session_state["csv_path"]
 
     with st.spinner("正在执行多模型拟合与 SINDy 方程辨识..."):
+        # 运行核心算法
         fit_results = run_model_comparison(data_path=target_csv, t_max=t_fit_max, L_val=L_input)
         xi_res, names_res = discover_governing_equation(df_data)
 
@@ -124,7 +128,8 @@ if "active_df" in st.session_state:
         st.markdown("#### 四大动力学模型横向对决与残差演化")
         if os.path.exists("figures/model_comparison_fit.png"):
             st.image("figures/model_comparison_fit.png", use_container_width=True)
-        
+
+        # 整理 AIC/BIC 表格
         summary_data = []
         min_aic = min(r["aic"] for r in fit_results.values())
         min_bic = min(r["bic"] for r in fit_results.values())
