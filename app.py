@@ -9,25 +9,21 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-# 导入底层核心模块 (全部顶格，杜绝局部缩进与全角空格)
 from track import track_pendulum_video
 from fit_models import run_model_comparison
 from sindy_discover import discover_governing_equation, run_identifiability_ablation
 from pendulum_theory import small_angle_period, exact_period
 from simulate import generate_simulation_data, save_and_plot_simulation
 
-# 页面全局配置
 st.set_page_config(
     page_title="大摆角单摆非线性动力学AI辨识系统",
     page_icon="🔬",
     layout="wide"
 )
 
-# 标题区
 st.title("🔬 大摆角单摆动力学：从手机视频到微分方程")
 st.caption("AI+物理实验创新赛道 | 计算机视觉测角 · 全局ODE拟合 · SINDy稀疏方程发现")
 
-# 侧边栏：参数配置与运行模式
 st.sidebar.header("⚙️ 实验物理参数")
 L_input = st.sidebar.number_input("等效摆长 L (m)", value=0.50, min_value=0.10, max_value=2.00, step=0.01)
 g_input = st.sidebar.number_input("当地重力加速度 g (m/s²)", value=9.80665, step=0.0001, format="%.5f")
@@ -43,7 +39,6 @@ data_mode = st.sidebar.radio(
 df_active = None
 csv_path = None
 
-# ----------------- 模式 1：数字仿真演练 -----------------
 if data_mode == "数字仿真演练模式 (无需视频，一键生成)":
     st.subheader("1. 数字靶场：动力学仿真生成")
     st.info("💡 当前为无视频演练模式，系统将利用 Runge-Kutta 数值求解常微分方程，生成带阻尼和高斯噪声的单摆轨迹供算法验证。")
@@ -70,7 +65,6 @@ if data_mode == "数字仿真演练模式 (无需视频，一键生成)":
             st.session_state["active_df"] = df_active
             st.session_state["csv_path"] = csv_path
 
-# ----------------- 模式 2：实拍视频分析 -----------------
 else:
     st.subheader("1. 实验输入：拖拽上传慢动作视频")
     uploaded_file = st.file_uploader(
@@ -100,7 +94,6 @@ else:
     else:
         st.info("💡 提示：实拍视频模式下请拖入 .mp4 文件；若目前暂无视频，可在左侧切换为【数字仿真演练模式】先睹为快。")
 
-# ----------------- 成果展示区 (只要触发过运行就展示) -----------------
 if "active_df" in st.session_state:
     df_data = st.session_state["active_df"]
     target_csv = st.session_state["csv_path"]
