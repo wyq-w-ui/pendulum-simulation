@@ -117,10 +117,17 @@ def run_model_comparison(data_path="data/mock_trajectory.csv", t_max=10.0, L_val
         raise FileNotFoundError(f"未找到数据文件 {data_path}，请先运行 simulate.py 生成数据！")
 
     df = pd.read_csv(data_path)
-    # 截取前 t_max 秒进行高精度拟合评估
+    # 兼容列名：无论叫 't' 还是 'time' 都统一为 'time'
+    if "time" not in df.columns and "t" in df.columns:
+        df["time"] = df["t"]
+    
+    # 兼容摆角列名：无论叫 'theta' 还是 'theta_rad' 均可识别
+    if "theta_rad" not in df.columns and "theta" in df.columns:
+        df["theta_rad"] = df["theta"]
+
     df_fit = df[df["time"] <= t_max].copy()
-    t_eval = df_fit["time"].values
-    theta_meas = df_fit["theta_raw_rad"].values
+    t_data = df_fit["time"].values
+    theta_data = df_fit["theta_rad"].values
 
     y0_init = [theta_meas[0], 0.0]
 
