@@ -1,7 +1,12 @@
 """
 fit_models.py
 基于整体常微分方程数值积分的全局轨迹非线性拟合与模型比较 (AIC/BIC)
-已加入：释放极值点自动对准、初始死锁清除、列名自动兼容、云端跨平台规范绘图
+已整合：
+1. 动静检测自动切除视频开头静止/手持阶段
+2. 自动搜索首个物理释放波峰，消灭 theta ≡ 0 平衡点死锁
+3. 弧度/角度单位自适应纠偏，杜绝 0.19° 等微小异常量级
+4. 规范阻尼参数拟合边界，避免 gamma 贴死边界出现骤死衰减
+5. 纯英文与 LaTeX 规范学术绘图，杜绝 Linux 云端方块乱码
 """
 
 import os
@@ -10,22 +15,21 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 from scipy.optimize import curve_fit
-from scipy.signal import find_peaks
 
-# 字体与负号兼容设置
+# 配置跨平台字体回退，防止负号与字符异常
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
 
 
-# 1. 动力学模型微分方程定义
+# 1. 动力学模型常微分方程定义
 def ode_m1(t, y, omega0_sq):
-    """M1: 线性无阻尼"""
+    """M1: 线性简谐（无阻尼）"""
     theta, omega = y
     return [omega, -omega0_sq * theta]
 
 
 def ode_m2(t, y, omega0_sq):
-    """M2: 非线性无阻尼 (理想大摆角)"""
+    """M2: 非线性简谐（理想大摆角无阻尼）"""
     theta, omega = y
     return [omega, -omega0_sq * np.sin(theta)]
 
@@ -42,7 +46,7 @@ def ode_m4(t, y, omega0_sq, gamma, beta):
     return [omega, -omega0_sq * np.sin(theta) - 2 * gamma * omega - beta * np.abs(omega) * omega]
 
 
-# 2. 通用数值积分求解轨迹封装
+# 2. 数值积分求解轨迹封装
 def integrate_trajectory(ode_func, t_eval, y0, params):
     sol = solve_ivp(
         fun=lambda t, y: ode_func(t, y, *params),
@@ -71,13 +75,13 @@ def fit_single_model(ode_func, t_data, theta_data, y0_init, p0, bounds, param_na
     except Exception:
         popt = np.array(p0)
 
-    # 模拟最优轨迹与残差统计
+    # 模拟最优轨迹并计算残差统计
     theta_pred = integrate_trajectory(ode_func, t_data, y0_init, popt)
     residuals = theta_data - theta_pred
     rss = np.sum(residuals**2)
     rmse_deg = np.degrees(np.sqrt(rss / n_pts))
 
-    # AIC 与 BIC 指标计算
+    # 赤池信息量 (AIC) 与贝叶斯信息量 (BIC)
     rss_safe = max(rss, 1e-12)
     aic = n_pts * np.log(rss_safe / n_pts) + 2 * k_params
     bic = n_pts * np.log(rss_safe / n_pts) + k_params * np.log(n_pts)
@@ -97,37 +101,50 @@ def fit_single_model(ode_func, t_data, theta_data, y0_init, p0, bounds, param_na
 def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
     df = pd.read_csv(data_path)
 
-    # 统一列名兼容
+    # 兼容处理列名
     if "time" not in df.columns and "t" in df.columns:
         df["time"] = df["t"]
     if "theta_rad" not in df.columns and "theta" in df.columns:
         df["theta_rad"] = df["theta"]
 
     t_all = df["time"].values
-    theta_all = df["theta_rad"].values
+    theta_raw_arr = df["theta_rad"].values
 
-    # ----------------- 关键修复：自适应搜寻释放点（波峰对齐） -----------------
-    abs_theta = np.abs(theta_all)
-    search_len = min(len(abs_theta), 400)
-    # 在前导段寻找显著峰值
-    peaks, _ = find_peaks(abs_theta[:search_len], distance=15, prominence=np.radians(2.0))
-    if len(peaks) > 0:
-        start_idx = peaks[np.argmax(abs_theta[peaks])]
+    # 1. 自动单位纠偏：判别输入是弧度制还是角度制
+    max_val = np.max(np.abs(theta_raw_arr))
+    if max_val > 3.14:
+        theta_all_rad = np.radians(theta_raw_arr)
     else:
-        start_idx = int(np.argmax(abs_theta[:search_len]))
+        theta_all_rad = theta_raw_arr
 
-    # 截取有效释放开始后的稳定振荡数据
+    # 2. 动静检测切除：跳过开头静止/手持阶段
+    diff_theta = np.abs(np.diff(theta_all_rad))
+    motion_indices = np.where(diff_theta > 0.003)[0]
+    first_move_idx = motion_indices[0] if len(motion_indices) > 0 else 0
+
+    # 3. 搜索第一个物理释放极值点（波峰对齐），确定真实释放起点
+    search_end = min(len(theta_all_rad), first_move_idx + 300)
+    local_segment = np.abs(theta_all_rad[first_move_idx:search_end])
+    start_idx = first_move_idx + int(np.argmax(local_segment))
+
+    # 截取从有效释放起点开始的时序数据并重置时间原点
     df_valid = df.iloc[start_idx:].copy().reset_index(drop=True)
-    df_valid["time"] = df_valid["time"] - df_valid["time"].iloc[0]  # 时间归零对齐
+    df_valid["time"] = df_valid["time"] - df_valid["time"].iloc[0]
 
     df_fit = df_valid[df_valid["time"] <= t_max].copy()
     t_data = df_fit["time"].values
-    theta_data = df_fit["theta_rad"].values
+    
+    # 拟合内核全程采用标准弧度
+    if max_val > 3.14:
+        theta_data = np.radians(df_fit["theta_rad"].values)
+    else:
+        theta_data = df_fit["theta_rad"].values
 
-    # 极值释放处角速度为 0，初始摆角为峰值角度，彻底打破 0 状态平衡点死锁
+    # 极值释放点初速度为 0，初始角度为释放角幅值，打破死锁
     y0_init = [theta_data[0], 0.0]
     omega0_sq_init = 9.80665 / max(L_val, 0.05)
 
+    # 动力学模型空间与自适应参数搜索范围
     models = {
         "M1 (Linear, Undamped)": {
             "func": ode_m1,
@@ -143,14 +160,14 @@ def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
         },
         "M3 (Viscous Damping)": {
             "func": ode_m3,
-            "p0": [omega0_sq_init, 0.02],
-            "bounds": ([1.0, 0.0], [80.0, 1.0]),
+            "p0": [omega0_sq_init, 0.005],
+            "bounds": ([1.0, 0.0], [80.0, 0.5]),
             "names": ["omega0_sq", "gamma"]
         },
         "M4 (Quadratic Drag)": {
             "func": ode_m4,
-            "p0": [omega0_sq_init, 0.02, 0.01],
-            "bounds": ([1.0, 0.0, 0.0], [80.0, 1.0, 0.5]),
+            "p0": [omega0_sq_init, 0.005, 0.001],
+            "bounds": ([1.0, 0.0, 0.0], [80.0, 0.5, 0.5]),
             "names": ["omega0_sq", "gamma", "beta"]
         }
     }
@@ -167,7 +184,9 @@ def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
         2, 1, figsize=(11, 7), sharex=True, gridspec_kw={'height_ratios': [2.5, 1]}
     )
 
-    ax_main.scatter(t_data, np.degrees(theta_data), s=6, color="darkgray", label=r"Measured $\theta(t)$", alpha=0.8)
+    # 绘图显示转换回角度制 (°)
+    theta_data_deg = np.degrees(theta_data)
+    ax_main.scatter(t_data, theta_data_deg, s=6, color="darkgray", label=r"Measured $\theta(t)$", alpha=0.8)
 
     colors = {
         "M1 (Linear, Undamped)": "tab:orange",
@@ -186,6 +205,7 @@ def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
         )
         ax_res.plot(t_data, np.degrees(res["residuals"]), label=name, color=colors[name], linewidth=1.1)
 
+    # 标准学术排版
     ax_main.set_ylabel(r"Angle $\theta$ ($^\circ$)")
     ax_main.set_title("Dynamic Models Comparison (M1 - M4 Global ODE Trajectory Fitting)")
     ax_main.grid(True, linestyle="--", alpha=0.5)
