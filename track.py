@@ -77,8 +77,8 @@ def track_pendulum_video(video_path, output_csv="data/theta_t.csv", show_preview
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (9, 9), 2)
 
-        # 结合 Otsu 与形态学闭操作提取高对比度暗色或亮色球体
-        _, thresh1 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.OTSU)
+        # 修复 OpenCV 常量名: cv2.THRESH_OTSU
+        _, thresh1 = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         morph = cv2.morphologyEx(thresh1, cv2.MORPH_OPEN, kernel)
 
@@ -108,22 +108,20 @@ def track_pendulum_video(video_path, output_csv="data/theta_t.csv", show_preview
                     cx = m["m10"] / m["m00"]
                     cy = m["m01"] / m["m00"]
 
-        # ----------------- 连续性约束防跳水保护 -----------------
+        # 连续性约束防跳水保护
         if cx is not None and cy is not None:
-            # 首次记录有效位置
             if last_valid_cx is None:
                 last_valid_cx, last_valid_cy = cx, cy
             else:
-                # 检查帧间位移是否在合理物理极限内
                 disp = np.hypot(cx - last_valid_cx, cy - last_valid_cy)
-                if disp > (w * 0.25):  # 发生剧烈跳变时判定为噪点误检
+                if disp > (w * 0.25):  # 超过合理物理位移时舍弃
                     cx, cy = np.nan, np.nan
                 else:
                     last_valid_cx, last_valid_cy = cx, cy
         else:
             cx, cy = np.nan, np.nan
 
-        # 解算摆角，缺失帧存入 np.nan 待统一插值，决不存 0
+        # 解算摆角，缺失帧统一打入 np.nan 待后续平滑插值
         if not np.isnan(cx):
             dx = cx - pivot_x
             dy = cy - pivot_y
@@ -143,18 +141,18 @@ def track_pendulum_video(video_path, output_csv="data/theta_t.csv", show_preview
         except Exception:
             pass
 
-    # 插值填补漏检帧
+    # 线性插值填补漏检帧
     s_theta = pd.Series(thetas_raw).interpolate(method='linear', limit_direction='both')
     if s_theta.isna().all():
         raise ValueError("视频追踪失败：未能识别到有效小球目标，请增强对比度或调整背景。")
 
     s_theta = s_theta.fillna(0.0)
     thetas_deg = np.degrees(s_theta.values)
-    # MAD 清洗突变野点
+    # MAD 清洗野点
     thetas_deg_clean = robust_mad_filter(thetas_deg)
     thetas_rad_clean = np.radians(thetas_deg_clean)
 
-    # 计算角速度
+    # 梯度差分求角速度
     dt = 1.0 / fps
     omega_clean = np.gradient(thetas_rad_clean, dt)
 
@@ -165,11 +163,11 @@ def track_pendulum_video(video_path, output_csv="data/theta_t.csv", show_preview
         "theta_deg": thetas_deg_clean
     })
 
-    # 保存 CSV
+    # 保存数据表
     os.makedirs(os.path.dirname(output_csv), exist_ok=True)
     df_out.to_csv(output_csv, index=False)
 
-    # 绘制提取轨迹图
+    # 导出诊断时序图
     os.makedirs("figures", exist_ok=True)
     plt.figure(figsize=(10, 4))
     plt.plot(df_out["time"], df_out["theta_deg"], 'b-', label=r"Tracked $\theta(t)$ (Cleaned)")
