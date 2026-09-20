@@ -78,8 +78,14 @@ def run_stlsq_robust(X, y, threshold_ratio=0.15, alpha_ridge=1e-3, max_iter=20):
 # 3. 单次时序 SINDy 方程识别
 # -------------------------------------------------------------
 def discover_governing_equation(df):
-    t = df["time"].values
-    theta_raw = df["theta_raw_rad"].values
+    df_eval = df.copy()
+    if "time" not in df_eval.columns and "t" in df_eval.columns:
+        df_eval["time"] = df_eval["t"]
+    if "theta_rad" not in df_eval.columns and "theta" in df_eval.columns:
+        df_eval["theta_rad"] = df_eval["theta"]
+
+    t = df_eval["time"].values
+    theta = df_eval["theta_rad"].values
     dt = t[1] - t[0]
 
     # SG 滤波平滑与数值导数
