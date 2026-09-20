@@ -9,7 +9,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-# 导入底层核心模块
+# 导入底层核心模块 (全部顶格，杜绝局部缩进与全角空格)
+from track import track_pendulum_video
 from fit_models import run_model_comparison
 from sindy_discover import discover_governing_equation, run_identifiability_ablation
 from pendulum_theory import small_angle_period, exact_period
@@ -45,8 +46,7 @@ csv_path = None
 # ----------------- 模式 1：数字仿真演练 -----------------
 if data_mode == "数字仿真演练模式 (无需视频，一键生成)":
     st.subheader("1. 数字靶场：动力学仿真生成")
-    st.info(
-        "💡 当前为无视频演练模式，系统将利用 Runge-Kutta 数值求解常微分方程，生成带阻尼和高斯噪声的单摆轨迹供算法验证。")
+    st.info("💡 当前为无视频演练模式，系统将利用 Runge-Kutta 数值求解常微分方程，生成带阻尼和高斯噪声的单摆轨迹供算法验证。")
 
     col_sim_1, col_sim_2 = st.columns([3, 1])
     with col_sim_1:
@@ -56,7 +56,6 @@ if data_mode == "数字仿真演练模式 (无需视频，一键生成)":
 
     if btn_run_sim:
         with st.spinner("正在生成仿真轨迹并运行后端算法链路..."):
-            # 1. 生成仿真数据
             sim_df, meta_params = generate_simulation_data(
                 theta0_deg=sim_angle,
                 L=L_input,
@@ -94,9 +93,6 @@ else:
 
         if btn_run_video:
             with st.spinner("正在逐帧提取摆球亚像素质心与角度..."):
-                from track import track_pendulum_video
-
-
                 csv_path = "data/theta_t.csv"
                 df_active = track_pendulum_video(video_temp_path, output_csv=csv_path, show_preview=False)
                 st.session_state["active_df"] = df_active
@@ -110,7 +106,6 @@ if "active_df" in st.session_state:
     target_csv = st.session_state["csv_path"]
 
     with st.spinner("正在执行多模型拟合与 SINDy 方程辨识..."):
-        # 运行核心算法
         fit_results = run_model_comparison(data_path=target_csv, t_max=t_fit_max, L_val=L_input)
         xi_res, names_res = discover_governing_equation(df_data)
 
@@ -130,7 +125,6 @@ if "active_df" in st.session_state:
         if os.path.exists("figures/model_comparison_fit.png"):
             st.image("figures/model_comparison_fit.png", use_container_width=True)
 
-        # 整理 AIC/BIC 表格
         summary_data = []
         min_aic = min(r["aic"] for r in fit_results.values())
         min_bic = min(r["bic"] for r in fit_results.values())
