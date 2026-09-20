@@ -1,11 +1,7 @@
 """
-src/fit_models.py
-大摆角单摆多模型常微分方程 (ODE) 全局拟合与 AIC/BIC 评估模块
-功能：
-1. 读取时序数据 (data/mock_trajectory.csv 或实际视觉提取数据)
-2. 基于 scipy.integrate.solve_ivp 和 scipy.optimize.least_squares 对 M1~M4 进行参数反演
-3. 统计各模型残差、RMSE，并计算 AIC 与 BIC 信息准则
-4. 绘制各模型时域拟合曲线与残差子图 (Residual Plots)
+fit_models.py
+基于整体常微分方程数值积分的全局轨迹非线性拟合与模型比较 (AIC/BIC)
+对比 M1(线性)、M2(简谐大角非线性)、M3(线性阻尼非线性)、M4(二次阻尼非线性)
 """
 
 import os
@@ -13,115 +9,80 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
-from scipy.optimize import least_squares
+from scipy.optimize import curve_fit
 
-
-# -------------------------------------------------------------
-# 1. 四大候选动力学 ODE 定义
-# -------------------------------------------------------------
-def ode_m1(t, y, a):
-    """M1: 小角线性模型 d²θ/dt² = -a*θ"""
+# 1. 动力学模型微分方程定义
+def ode_m1(t, y, omega0_sq):
+    """M1: 线性无阻尼"""
     theta, omega = y
-    return [omega, -a * theta]
+    return [omega, -omega0_sq * theta]
 
-
-def ode_m2(t, y, a):
-    """M2: 理想非线性模型 d²θ/dt² = -a*sin(θ)"""
+def ode_m2(t, y, omega0_sq):
+    """M2: 非线性无阻尼 (理想大摆角)"""
     theta, omega = y
-    return [omega, -a * np.sin(theta)]
+    return [omega, -omega0_sq * np.sin(theta)]
 
-
-def ode_m3(t, y, a, b):
-    """M3: 线性阻尼模型 d²θ/dt² = -a*sin(θ) - b*ω"""
+def ode_m3(t, y, omega0_sq, gamma):
+    """M3: 非线性 + 线性黏滞阻尼"""
     theta, omega = y
-    return [omega, -a * np.sin(theta) - b * omega]
+    return [omega, -omega0_sq * np.sin(theta) - 2 * gamma * omega]
 
-
-def ode_m4(t, y, a, b, c):
-    """M4: 包含二次速度阻尼 d²θ/dt² = -a*sin(θ) - b*ω - c*|ω|*ω"""
+def ode_m4(t, y, omega0_sq, gamma, beta):
+    """M4: 非线性 + 线性黏滞 + 二次空气阻力"""
     theta, omega = y
-    return [omega, -a * np.sin(theta) - b * omega - c * np.abs(omega) * omega]
+    return [omega, -omega0_sq * np.sin(theta) - 2 * gamma * omega - beta * np.abs(omega) * omega]
 
-
-# -------------------------------------------------------------
-# 2. 通用 ODE 轨迹积分与残差函数
-# -------------------------------------------------------------
-def simulate_trajectory(ode_func, t_eval, y0, params):
-    """前向数值积分产生预测轨迹"""
+# 2. 通用数值积分求解轨迹封装
+def integrate_trajectory(ode_func, t_eval, y0, params):
     sol = solve_ivp(
-        fun=ode_func,
+        fun=lambda t, y: ode_func(t, y, *params),
         t_span=(t_eval[0], t_eval[-1]),
         y0=y0,
-        args=tuple(params),
         t_eval=t_eval,
         method="RK45",
         rtol=1e-6,
         atol=1e-8
     )
-    if not sol.success or len(sol.y[0]) != len(t_eval):
-        # 求解发散或异常时返回极大惩罚
-        return np.full_like(t_eval, 1e5)
+    if not sol.success:
+        return np.full_like(t_eval, np.nan)
     return sol.y[0]
 
+# 3. 单模型非线性最小二乘拟合
+def fit_single_model(ode_func, t_data, theta_data, y0_init, p0, bounds, param_names):
+    n_pts = len(t_data)
+    k_params = len(p0)
 
-def fit_single_model(ode_func, t_eval, theta_meas, y0_guess, p0, bounds, param_names):
-    """
-    通用拟合器：同时优化初始角度 y0[0] 与物理方程参数
-    """
-    # 待优化变量向量：[theta_0, *params]
-    x0 = [y0_guess[0]] + list(p0)
-    lower_b = [y0_guess[0] - np.radians(2.0)] + list(bounds[0])
-    upper_b = [y0_guess[0] + np.radians(2.0)] + list(bounds[1])
+    def fit_wrapper(t, *params):
+        return integrate_trajectory(ode_func, t, y0_init, params)
 
-    def residuals(x):
-        theta_init = x[0]
-        params = x[1:]
-        theta_pred = simulate_trajectory(ode_func, t_eval, [theta_init, y0_guess[1]], params)
-        return theta_pred - theta_meas
+    popt, _ = curve_fit(fit_wrapper, t_data, theta_data, p0=p0, bounds=bounds, maxfev=2000)
+    
+    # 模拟最优轨迹与残差统计
+    theta_pred = integrate_trajectory(ode_func, t_data, y0_init, popt)
+    residuals = theta_data - theta_pred
+    rss = np.sum(residuals**2)
+    rmse_deg = np.degrees(np.sqrt(rss / n_pts))
 
-    res = least_squares(residuals, x0, bounds=(lower_b, upper_b), method="trf")
-    best_theta0 = res.x[0]
-    best_params = res.x[1:]
+    # 赤池信息量 (AIC) 与贝叶斯信息量 (BIC)
+    rss_safe = max(rss, 1e-12)
+    aic = n_pts * np.log(rss_safe / n_pts) + 2 * k_params
+    bic = n_pts * np.log(rss_safe / n_pts) + k_params * np.log(n_pts)
 
-    # 重新生成最佳拟合轨迹
-    best_traj = simulate_trajectory(ode_func, t_eval, [best_theta0, y0_guess[1]], best_params)
-    res_vec = best_traj - theta_meas
-    rss = np.sum(res_vec ** 2)
-    n = len(theta_meas)
-    k = len(best_params) + 1  # 自由参数个数 (含 theta0)
-
-    # 信息准则计算
-    aic = n * np.log(rss / n) + 2 * k
-    bic = n * np.log(rss / n) + k * np.log(n)
-    rmse_deg = np.degrees(np.sqrt(rss / n))
-
-    fit_info = {
-        "params": dict(zip(param_names, best_params)),
-        "theta0_deg": np.degrees(best_theta0),
-        "trajectory": best_traj,
-        "residuals": res_vec,
-        "rss": rss,
+    param_dict = {name: val for name, val in zip(param_names, popt)}
+    return {
+        "params": param_dict,
         "rmse_deg": rmse_deg,
-        "k": k,
         "aic": aic,
-        "bic": bic
+        "bic": bic,
+        "theta_pred": theta_pred,
+        "residuals": residuals
     }
-    return fit_info
 
-
-# -------------------------------------------------------------
-# 3. 多模型批量拟合与信息准则评价
-# -------------------------------------------------------------
-def run_model_comparison(data_path="data/mock_trajectory.csv", t_max=10.0, L_val=0.50):
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"未找到数据文件 {data_path}，请先运行 simulate.py 生成数据！")
-
+# 4. 主控对决流水线
+def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
     df = pd.read_csv(data_path)
-    # 兼容列名：无论叫 't' 还是 'time' 都统一为 'time'
     if "time" not in df.columns and "t" in df.columns:
         df["time"] = df["t"]
-    
-    # 兼容摆角列名：无论叫 'theta' 还是 'theta_rad' 均可识别
     if "theta_rad" not in df.columns and "theta" in df.columns:
         df["theta_rad"] = df["theta"]
 
@@ -130,107 +91,65 @@ def run_model_comparison(data_path="data/mock_trajectory.csv", t_max=10.0, L_val
     theta_data = df_fit["theta_rad"].values
 
     y0_init = [theta_data[0], 0.0]
+    omega0_sq_init = 9.80665 / L_val
 
-    # 4 个模型的配置字典
-    model_configs = {
-        "M1 (Linear)": {
+    models = {
+        "M1 (线性无阻)": {
             "func": ode_m1,
-            "p0": [18.0],
-            "bounds": ([5.0], [30.0]),
-            "names": ["a"]
+            "p0": [omega0_sq_init],
+            "bounds": ([5.0], [40.0]),
+            "names": ["omega0_sq"]
         },
-        "M2 (Ideal Nonlinear)": {
+        "M2 (非线性无阻)": {
             "func": ode_m2,
-            "p0": [18.0],
-            "bounds": ([5.0], [30.0]),
-            "names": ["a"]
+            "p0": [omega0_sq_init],
+            "bounds": ([5.0], [40.0]),
+            "names": ["omega0_sq"]
         },
-        "M3 (Linear Damping)": {
+        "M3 (线性阻尼)": {
             "func": ode_m3,
-            "p0": [18.0, 0.01],
-            "bounds": ([5.0, 0.0], [30.0, 0.5]),
-            "names": ["a", "b"]
+            "p0": [omega0_sq_init, 0.01],
+            "bounds": ([5.0, 0.0], [40.0, 1.0]),
+            "names": ["omega0_sq", "gamma"]
         },
-        "M4 (Quadratic Damping)": {
+        "M4 (二次阻尼)": {
             "func": ode_m4,
-            "p0": [18.0, 0.01, 0.005],
-            "bounds": ([5.0, 0.0, 0.0], [30.0, 0.5, 0.1]),
-            "names": ["a", "b", "c"]
+            "p0": [omega0_sq_init, 0.01, 0.005],
+            "bounds": ([5.0, 0.0, 0.0], [40.0, 1.0, 0.5]),
+            "names": ["omega0_sq", "gamma", "beta"]
         }
     }
 
     results = {}
-    print("=" * 80)
-    print(f"正在对时序数据执行 M1~M4 动力学全局拟合 (数据点数: {len(t_data)}, 拟合时长: {t_max}s)...")
-    print("=" * 80)
-
-    for name, cfg in model_configs.items():
-        print(f"正在优化 {name} ...")
-        fit_info = fit_single_model(
+    for name, cfg in models.items():
+        results[name] = fit_single_model(
             cfg["func"], t_data, theta_data, y0_init, cfg["p0"], cfg["bounds"], cfg["names"]
         )
-        results[name] = fit_info
 
-    # 找到最优 AIC 作为基准
-    min_aic = min(r["aic"] for r in results.values())
-    min_bic = min(r["bic"] for r in results.values())
-
-    # 输出排位榜
-    print("\n" + "=" * 90)
-    print(f"{'模型名称':^22} | {'参数反演估计值':^26} | {'RMSE (°)':^10} | {'ΔAIC':^10} | {'ΔBIC':^10}")
-    print("-" * 90)
-    for name, r in results.items():
-        param_str = ", ".join([f"{k}={v:.4f}" for k, v in r["params"].items()])
-        delta_aic = r["aic"] - min_aic
-        delta_bic = r["bic"] - min_bic
-        print(f"{name:<22} | {param_str:<26} | {r['rmse_deg']:>9.4f} | {delta_aic:>9.2f} | {delta_bic:>9.2f}")
-    print("=" * 90)
-    print("注：ΔAIC / ΔBIC = 0.00 代表统计学上的最优模型；> 10 代表极强淘汰证据。")
-
-    # ---------------------------------------------------------
-    # 4. 绘图输出：拟合轨迹与残差分析图
-    # ---------------------------------------------------------
-    fig, (ax_main, ax_res) = plt.subplots(
-        2, 1, figsize=(11, 6.5), dpi=150, sharex=True, gridspec_kw={"height_ratios": [2.5, 1]}
-    )
-
-    # 绘制实测散点
-    ax_main.scatter(t_eval, np.degrees(theta_meas), s=3, color="lightgray", label="Measured θ(t)", alpha=0.7)
-
-    colors = ["#999999", "#ff7f0e", "#2ca02c", "#d62728"]
-    linestyles = [":", "--", "-.", "-"]
-
-    for (name, r), color, ls in zip(results.items(), colors, linestyles):
-        ax_main.plot(t_eval, np.degrees(r["trajectory"]), label=f"{name}", color=color, linestyle=ls, lw=1.5)
-        # 残差图
-        ax_res.plot(t_eval, np.degrees(r["residuals"]), label=f"{name}", color=color, linestyle=ls, lw=1.2)
-
-    ax_main.set_ylabel("Angle $\\theta$ (deg)", fontsize=11)
-    ax_main.set_title("Global Trajectory Fit Comparison (M1 - M4)", fontsize=12)
-    ax_main.legend(loc="upper right", fontsize=9)
-    ax_main.grid(True, linestyle="--", alpha=0.5)
-
-    ax_res.set_ylabel("Residual (deg)", fontsize=10)
-    ax_res.set_xlabel("Time $t$ (s)", fontsize=11)
-    ax_res.axhline(0, color="black", linestyle="-", lw=0.8)
-    ax_res.grid(True, linestyle="--", alpha=0.5)
-
+    # 绘制模型对比图与时域残差图
     os.makedirs("figures", exist_ok=True)
-    figure_path = "figures/model_comparison_fit.png"
+    fig, (ax_main, ax_res) = plt.subplots(2, 1, figsize=(11, 7), sharex=True, gridspec_kw={'height_ratios': [2.5, 1]})
+    
+    # 统一使用 t_data 和 theta_data
+    ax_main.scatter(t_data, np.degrees(theta_data), s=4, color="lightgray", label="Measured θ(t)", alpha=0.7)
+    
+    colors = {"M1 (线性无阻)": "tab:orange", "M2 (非线性无阻)": "tab:green", "M3 (线性阻尼)": "tab:blue", "M4 (二次阻尼)": "tab:red"}
+    for name, res in results.items():
+        ax_main.plot(t_data, np.degrees(res["theta_pred"]), label=f"{name} (RMSE={res['rmse_deg']:.2f}°)", color=colors[name], linewidth=1.5)
+        ax_res.plot(t_data, np.degrees(res["residuals"]), label=name, color=colors[name], linewidth=1.0)
+
+    ax_main.set_ylabel("摆角 θ (°)")
+    ax_main.set_title("四大动力学常微分方程 (M1~M4) 全局轨迹拟合对比")
+    ax_main.grid(True, linestyle="--", alpha=0.5)
+    ax_main.legend(loc="upper right")
+
+    ax_res.set_xlabel("时间 t (s)")
+    ax_res.set_ylabel("残差 (°)")
+    ax_res.axhline(0, color="black", linestyle="--", linewidth=0.8)
+    ax_res.grid(True, linestyle="--", alpha=0.5)
+    
     plt.tight_layout()
-    plt.savefig(figure_path, dpi=300)
-    print(f"\n[OK] 模型对比与残差图已保存至: {figure_path}")
-    plt.show()
+    plt.savefig("figures/model_comparison_fit.png", dpi=300)
+    plt.close()
 
     return results
-
-
-if __name__ == "__main__":
-    # 优先读取实测轨迹数据，若无则自动回退至仿真数据
-    real_csv = "data/theta_t.csv"
-    mock_csv = "data/mock_trajectory.csv"
-
-    target_csv = real_csv if os.path.exists(real_csv) else mock_csv
-    print(f"[*] 当前数据输入源: {target_csv}")
-
-    run_model_comparison(data_path=target_csv, t_max=10.0)
