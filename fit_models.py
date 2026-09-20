@@ -167,7 +167,7 @@ def run_model_comparison(data_path="data/mock_trajectory.csv", t_max=10.0, L_val
     for name, cfg in model_configs.items():
         print(f"正在优化 {name} ...")
         fit_info = fit_single_model(
-            cfg["func"], t_eval, theta_meas, y0_init, cfg["p0"], cfg["bounds"], cfg["names"]
+            cfg["func"], t_data, theta_data, y0_init, cfg["p0"], cfg["bounds"], cfg["names"]
         )
         results[name] = fit_info
 
