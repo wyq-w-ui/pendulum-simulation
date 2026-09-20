@@ -94,7 +94,6 @@ else:
 
         if btn_run_video:
             with st.spinner("正在逐帧提取摆球亚像素质心与角度..."):
-                from track import track_pendulum_video
 
                 csv_path = "data/theta_t.csv"
                 df_active = track_pendulum_video(video_temp_path, output_csv=csv_path, show_preview=False)
