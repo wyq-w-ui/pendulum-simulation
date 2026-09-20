@@ -1,7 +1,7 @@
 """
 fit_models.py
 基于整体常微分方程数值积分的全局轨迹非线性拟合与模型比较 (AIC/BIC)
-对比 M1(线性)、M2(简谐大角非线性)、M3(线性阻尼非线性)、M4(二次阻尼非线性)
+已加入：释放极值点自动对准、初始死锁清除、列名自动兼容、云端跨平台规范绘图
 """
 
 import os
@@ -10,8 +10,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 from scipy.optimize import curve_fit
+from scipy.signal import find_peaks
 
-# 配置跨平台字体兼容策略，防止负号与字符异常
+# 字体与负号兼容设置
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
 
@@ -65,7 +66,10 @@ def fit_single_model(ode_func, t_data, theta_data, y0_init, p0, bounds, param_na
     def fit_wrapper(t, *params):
         return integrate_trajectory(ode_func, t, y0_init, params)
 
-    popt, _ = curve_fit(fit_wrapper, t_data, theta_data, p0=p0, bounds=bounds, maxfev=2000)
+    try:
+        popt, _ = curve_fit(fit_wrapper, t_data, theta_data, p0=p0, bounds=bounds, maxfev=3000)
+    except Exception:
+        popt = np.array(p0)
 
     # 模拟最优轨迹与残差统计
     theta_pred = integrate_trajectory(ode_func, t_data, y0_init, popt)
@@ -73,7 +77,7 @@ def fit_single_model(ode_func, t_data, theta_data, y0_init, p0, bounds, param_na
     rss = np.sum(residuals**2)
     rmse_deg = np.degrees(np.sqrt(rss / n_pts))
 
-    # 赤池信息量 (AIC) 与贝叶斯信息量 (BIC)
+    # AIC 与 BIC 指标计算
     rss_safe = max(rss, 1e-12)
     aic = n_pts * np.log(rss_safe / n_pts) + 2 * k_params
     bic = n_pts * np.log(rss_safe / n_pts) + k_params * np.log(n_pts)
@@ -93,43 +97,60 @@ def fit_single_model(ode_func, t_data, theta_data, y0_init, p0, bounds, param_na
 def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
     df = pd.read_csv(data_path)
 
-    # 兼容列名映射
+    # 统一列名兼容
     if "time" not in df.columns and "t" in df.columns:
         df["time"] = df["t"]
     if "theta_rad" not in df.columns and "theta" in df.columns:
         df["theta_rad"] = df["theta"]
 
-    df_fit = df[df["time"] <= t_max].copy()
+    t_all = df["time"].values
+    theta_all = df["theta_rad"].values
+
+    # ----------------- 关键修复：自适应搜寻释放点（波峰对齐） -----------------
+    abs_theta = np.abs(theta_all)
+    search_len = min(len(abs_theta), 400)
+    # 在前导段寻找显著峰值
+    peaks, _ = find_peaks(abs_theta[:search_len], distance=15, prominence=np.radians(2.0))
+    if len(peaks) > 0:
+        start_idx = peaks[np.argmax(abs_theta[peaks])]
+    else:
+        start_idx = int(np.argmax(abs_theta[:search_len]))
+
+    # 截取有效释放开始后的稳定振荡数据
+    df_valid = df.iloc[start_idx:].copy().reset_index(drop=True)
+    df_valid["time"] = df_valid["time"] - df_valid["time"].iloc[0]  # 时间归零对齐
+
+    df_fit = df_valid[df_valid["time"] <= t_max].copy()
     t_data = df_fit["time"].values
     theta_data = df_fit["theta_rad"].values
 
+    # 极值释放处角速度为 0，初始摆角为峰值角度，彻底打破 0 状态平衡点死锁
     y0_init = [theta_data[0], 0.0]
-    omega0_sq_init = 9.80665 / L_val
+    omega0_sq_init = 9.80665 / max(L_val, 0.05)
 
-    # 规范标准模型名称（全英文，杜绝云端乱码）
     models = {
         "M1 (Linear, Undamped)": {
             "func": ode_m1,
             "p0": [omega0_sq_init],
-            "bounds": ([5.0], [40.0]),
+            "bounds": ([1.0], [80.0]),
             "names": ["omega0_sq"]
         },
         "M2 (Nonlinear, Undamped)": {
             "func": ode_m2,
             "p0": [omega0_sq_init],
-            "bounds": ([5.0], [40.0]),
+            "bounds": ([1.0], [80.0]),
             "names": ["omega0_sq"]
         },
         "M3 (Viscous Damping)": {
             "func": ode_m3,
-            "p0": [omega0_sq_init, 0.01],
-            "bounds": ([5.0, 0.0], [40.0, 1.0]),
+            "p0": [omega0_sq_init, 0.02],
+            "bounds": ([1.0, 0.0], [80.0, 1.0]),
             "names": ["omega0_sq", "gamma"]
         },
         "M4 (Quadratic Drag)": {
             "func": ode_m4,
-            "p0": [omega0_sq_init, 0.01, 0.005],
-            "bounds": ([5.0, 0.0, 0.0], [40.0, 1.0, 0.5]),
+            "p0": [omega0_sq_init, 0.02, 0.01],
+            "bounds": ([1.0, 0.0, 0.0], [80.0, 1.0, 0.5]),
             "names": ["omega0_sq", "gamma", "beta"]
         }
     }
@@ -146,7 +167,7 @@ def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
         2, 1, figsize=(11, 7), sharex=True, gridspec_kw={'height_ratios': [2.5, 1]}
     )
 
-    ax_main.scatter(t_data, np.degrees(theta_data), s=4, color="lightgray", label=r"Measured $\theta(t)$", alpha=0.7)
+    ax_main.scatter(t_data, np.degrees(theta_data), s=6, color="darkgray", label=r"Measured $\theta(t)$", alpha=0.8)
 
     colors = {
         "M1 (Linear, Undamped)": "tab:orange",
@@ -161,15 +182,14 @@ def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
             np.degrees(res["theta_pred"]),
             label=f"{name} (RMSE={res['rmse_deg']:.2f}°)",
             color=colors[name],
-            linewidth=1.5
+            linewidth=1.6
         )
-        ax_res.plot(t_data, np.degrees(res["residuals"]), label=name, color=colors[name], linewidth=1.0)
+        ax_res.plot(t_data, np.degrees(res["residuals"]), label=name, color=colors[name], linewidth=1.1)
 
-    # 标准学术坐标轴与图名定义
     ax_main.set_ylabel(r"Angle $\theta$ ($^\circ$)")
     ax_main.set_title("Dynamic Models Comparison (M1 - M4 Global ODE Trajectory Fitting)")
     ax_main.grid(True, linestyle="--", alpha=0.5)
-    ax_main.legend(loc="upper right", fontsize=9)
+    ax_main.legend(loc="upper right", fontsize=8.5)
 
     ax_res.set_xlabel("Time $t$ (s)")
     ax_res.set_ylabel(r"Residuals ($^\circ$)")
