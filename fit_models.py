@@ -101,11 +101,20 @@ def fit_single_model(ode_func, t_data, theta_data, y0_init, p0, bounds, param_na
 def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
     df = pd.read_csv(data_path)
 
-    # 兼容处理列名
-    if "time" not in df.columns and "t" in df.columns:
-        df["time"] = df["t"]
-    if "theta_rad" not in df.columns and "theta" in df.columns:
-        df["theta_rad"] = df["theta"]
+   # 1. 自动兼容时间列名 (time 或 t)
+    for col in ["time", "t", "t_eval"]:
+        if col in df.columns:
+            df["time"] = df[col]
+            break
+
+    # 2. 自动兼容角度列名 (theta_rad, theta, theta_deg, theta_sim_deg 等)
+    for col in ["theta_rad", "theta", "theta_deg", "theta_sim_deg", "theta_clean_deg"]:
+        if col in df.columns:
+            if "deg" in col:
+                df["theta_rad"] = np.radians(df[col])
+            else:
+                df["theta_rad"] = df[col]
+            break
 
     t_all = df["time"].values
     theta_raw_arr = df["theta_rad"].values
