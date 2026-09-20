@@ -129,7 +129,7 @@ def run_model_comparison(data_path="data/mock_trajectory.csv", t_max=10.0, L_val
     t_data = df_fit["time"].values
     theta_data = df_fit["theta_rad"].values
 
-    y0_init = [theta_meas[0], 0.0]
+    y0_init = [theta_data[0], 0.0]
 
     # 4 个模型的配置字典
     model_configs = {
