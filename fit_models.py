@@ -1,12 +1,12 @@
 """
 fit_models.py
 基于整体常微分方程数值积分的全局轨迹非线性拟合与模型比较 (AIC/BIC)
-已整合：
-1. 动静检测自动切除视频开头静止/手持阶段
-2. 自动搜索首个物理释放波峰，消灭 theta ≡ 0 平衡点死锁
-3. 弧度/角度单位自适应纠偏，杜绝 0.19° 等微小异常量级
-4. 规范阻尼参数拟合边界，避免 gamma 贴死边界出现骤死衰减
-5. 纯英文与 LaTeX 规范学术绘图，杜绝 Linux 云端方块乱码
+特性：
+1. 稳健的多层列名模糊匹配与自动保底，杜绝仿真与实测 CSV 的 KeyError
+2. 角度/弧度自适应单位校验与换算
+3. 动态释放点（波峰）检测与时间归零，清除平衡点死锁
+4. 规范参数搜索边界，避免阻尼系数贴死边界
+5. 纯英文与 LaTeX 规范学术绘图，消除 Linux 云端方框乱码
 """
 
 import os
@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 from scipy.optimize import curve_fit
 
-# 配置跨平台字体回退，防止负号与字符异常
+# 配置跨平台基础字体，防止负号与字符异常
 plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'sans-serif']
 plt.rcParams['axes.unicode_minus'] = False
 
@@ -101,59 +101,88 @@ def fit_single_model(ode_func, t_data, theta_data, y0_init, p0, bounds, param_na
 def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
     df = pd.read_csv(data_path)
 
-   # 1. 自动兼容时间列名 (time 或 t)
-    for col in ["time", "t", "t_eval"]:
-        if col in df.columns:
-            df["time"] = df[col]
+    # ---------- 多级自适应列名兼容引擎 ----------
+    # 1. 提取时间列
+    time_col = None
+    for col in df.columns:
+        c_low = str(col).lower().strip()
+        if c_low in ["time", "t", "t_eval", "t_s"] or "time" in c_low:
+            time_col = col
+            break
+    if time_col is None:
+        time_col = df.columns[0]
+    df["time"] = pd.to_numeric(df[time_col], errors='coerce')
+
+    # 2. 提取摆角列并转换为弧度
+    theta_col = None
+    # 优先匹配明确为弧度的列
+    for col in df.columns:
+        c_low = str(col).lower().strip()
+        if "theta" in c_low and "rad" in c_low:
+            theta_col = col
+            df["theta_rad"] = pd.to_numeric(df[theta_col], errors='coerce')
             break
 
-    # 2. 自动兼容角度列名 (theta_rad, theta, theta_deg, theta_sim_deg 等)
-    for col in ["theta_rad", "theta", "theta_deg", "theta_sim_deg", "theta_clean_deg"]:
-        if col in df.columns:
-            if "deg" in col:
-                df["theta_rad"] = np.radians(df[col])
-            else:
-                df["theta_rad"] = df[col]
-            break
+    # 其次匹配角度单位列 (deg/angle)
+    if theta_col is None:
+        for col in df.columns:
+            c_low = str(col).lower().strip()
+            if "deg" in c_low or "angle" in c_low:
+                theta_col = col
+                df["theta_rad"] = np.radians(pd.to_numeric(df[theta_col], errors='coerce'))
+                break
+
+    # 再次匹配通用 theta 列
+    if theta_col is None:
+        for col in df.columns:
+            c_low = str(col).lower().strip()
+            if "theta" in c_low:
+                theta_col = col
+                df["theta_rad"] = pd.to_numeric(df[theta_col], errors='coerce')
+                break
+
+    # 最终绝对索引兜底：取第二列
+    if "theta_rad" not in df.columns:
+        df["theta_rad"] = pd.to_numeric(df.iloc[:, 1], errors='coerce')
+
+    # 清除 NaN
+    df = df.dropna(subset=["time", "theta_rad"]).copy().reset_index(drop=True)
 
     t_all = df["time"].values
     theta_raw_arr = df["theta_rad"].values
 
-    # 1. 自动单位纠偏：判别输入是弧度制还是角度制
+    # 3. 自动单位幅值校验
     max_val = np.max(np.abs(theta_raw_arr))
-    if max_val > 3.14:
+    if max_val > 3.14:  # 若大于 pi 说明误将度当成了弧度，补做转换
         theta_all_rad = np.radians(theta_raw_arr)
     else:
         theta_all_rad = theta_raw_arr
 
-    # 2. 动静检测切除：跳过开头静止/手持阶段
+    # 4. 动静检测切除：跳过开头静止/手持阶段
     diff_theta = np.abs(np.diff(theta_all_rad))
     motion_indices = np.where(diff_theta > 0.003)[0]
     first_move_idx = motion_indices[0] if len(motion_indices) > 0 else 0
 
-    # 3. 搜索第一个物理释放极值点（波峰对齐），确定真实释放起点
+    # 5. 搜索第一个释放波峰极值点，时间对齐归零
     search_end = min(len(theta_all_rad), first_move_idx + 300)
     local_segment = np.abs(theta_all_rad[first_move_idx:search_end])
-    start_idx = first_move_idx + int(np.argmax(local_segment))
+    start_idx = first_move_idx + int(np.argmax(local_segment)) if len(local_segment) > 0 else 0
 
-    # 截取从有效释放起点开始的时序数据并重置时间原点
     df_valid = df.iloc[start_idx:].copy().reset_index(drop=True)
     df_valid["time"] = df_valid["time"] - df_valid["time"].iloc[0]
 
     df_fit = df_valid[df_valid["time"] <= t_max].copy()
     t_data = df_fit["time"].values
-    
-    # 拟合内核全程采用标准弧度
+
     if max_val > 3.14:
         theta_data = np.radians(df_fit["theta_rad"].values)
     else:
         theta_data = df_fit["theta_rad"].values
 
-    # 极值释放点初速度为 0，初始角度为释放角幅值，打破死锁
+    # 初始状态设置：初始速度为 0，初始角位移为释放幅值
     y0_init = [theta_data[0], 0.0]
     omega0_sq_init = 9.80665 / max(L_val, 0.05)
 
-    # 动力学模型空间与自适应参数搜索范围
     models = {
         "M1 (Linear, Undamped)": {
             "func": ode_m1,
@@ -193,7 +222,6 @@ def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
         2, 1, figsize=(11, 7), sharex=True, gridspec_kw={'height_ratios': [2.5, 1]}
     )
 
-    # 绘图显示转换回角度制 (°)
     theta_data_deg = np.degrees(theta_data)
     ax_main.scatter(t_data, theta_data_deg, s=6, color="darkgray", label=r"Measured $\theta(t)$", alpha=0.8)
 
@@ -214,7 +242,6 @@ def run_model_comparison(data_path="data/theta_t.csv", t_max=10.0, L_val=0.50):
         )
         ax_res.plot(t_data, np.degrees(res["residuals"]), label=name, color=colors[name], linewidth=1.1)
 
-    # 标准学术排版
     ax_main.set_ylabel(r"Angle $\theta$ ($^\circ$)")
     ax_main.set_title("Dynamic Models Comparison (M1 - M4 Global ODE Trajectory Fitting)")
     ax_main.grid(True, linestyle="--", alpha=0.5)
