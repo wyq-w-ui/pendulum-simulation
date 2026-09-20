@@ -194,8 +194,12 @@ def track_pendulum_video(
 
         frame_idx += 1
 
-    cap.release()
-    cv2.destroyAllWindows()
+   cap.release()
+    if show_preview:
+        try:
+            cv2.destroyAllWindows()
+        except Exception:
+            pass
 
     # ---------------- Step B: MAD 稳健统计异常帧清洗 ----------------
     t_arr = np.array(t_list)
@@ -255,8 +259,11 @@ def track_pendulum_video(
     plt.grid(True, linestyle="--", alpha=0.5)
     plt.legend(loc="upper right", fontsize=9)
     plt.tight_layout()
+    os.makedirs("figures", exist_ok=True)
     plt.savefig("figures/extracted_trajectory.png", dpi=300)
-    plt.show()
+    if show_preview:
+        plt.show()
+    plt.close()
 
     return df_out
 
