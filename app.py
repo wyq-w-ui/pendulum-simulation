@@ -1,6 +1,7 @@
 """
 app.py
 大摆角单摆动力学 AI 辅助实验 —— 一键交互分析网页 (双模式：仿真演练 / 实测视频)
+彻底解决 session_state 串台、旧数据残留与图文脱节问题
 """
 
 import os
@@ -31,21 +32,27 @@ t_fit_max = st.sidebar.slider("轨迹拟合分析时长 (秒)", min_value=3.0, m
 
 st.sidebar.markdown("---")
 st.sidebar.header("🕹️ 数据源模式切换")
+
+def clear_mode_cache():
+    """切换模式时清理历史分析结果，防止旧数据污染"""
+    for key in ["active_df", "csv_path", "run_done", "active_mode"]:
+        if key in st.session_state:
+            del st.session_state[key]
+
 data_mode = st.sidebar.radio(
     "选择分析模式:",
-    ("数字仿真演练模式 (无需视频，一键生成)", "实拍视频分析模式 (待上传实测视频)")
+    ("数字仿真演练模式 (无需视频，一键生成)", "实拍视频分析模式 (待上传实测视频)"),
+    on_change=clear_mode_cache
 )
 
-df_active = None
-csv_path = None
-
+# 1. 数字仿真演练模式
 if data_mode == "数字仿真演练模式 (无需视频，一键生成)":
     st.subheader("1. 数字靶场：动力学仿真生成")
-    st.info("💡 当前为无视频演练模式，系统将利用 Runge-Kutta 数值求解常微分方程，生成带阻尼和高斯噪声的单摆轨迹供算法验证。")
+    st.info("💡 当前为无视频演练模式：利用 Runge-Kutta 数值求解器生成大摆角阻尼轨迹，用于标准基准验证。")
 
     col_sim_1, col_sim_2 = st.columns([3, 1])
     with col_sim_1:
-        sim_angle = st.slider("初始释放角 θ₀ (度)", min_value=5.0, max_value=80.0, value=60.0, step=5.0)
+        sim_angle = st.slider("初始释放角 θ₀ (度)", min_value=15.0, max_value=80.0, value=60.0, step=5.0)
     with col_sim_2:
         btn_run_sim = st.button("🚀 启动全流程分析", type="primary", use_container_width=True)
 
@@ -61,10 +68,13 @@ if data_mode == "数字仿真演练模式 (无需视频，一键生成)":
             )
             csv_path = "data/mock_trajectory.csv"
             save_and_plot_simulation(sim_df, meta_params, output_csv=csv_path)
-            df_active = sim_df
-            st.session_state["active_df"] = df_active
+            
+            st.session_state["active_df"] = sim_df
             st.session_state["csv_path"] = csv_path
+            st.session_state["run_done"] = True
+            st.session_state["active_mode"] = "sim"
 
+# 2. 实拍视频分析模式
 else:
     st.subheader("1. 实验输入：拖拽上传慢动作视频")
     uploaded_file = st.file_uploader(
@@ -73,9 +83,9 @@ else:
         help="建议使用 120 或 240 fps 录制，初始摆角 ≤ 80°"
     )
     if uploaded_file is not None:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tfile:
-            tfile.write(uploaded_file.read())
-            video_temp_path = tfile.name
+        video_temp_path = "temp_input_video.mp4"
+        with open(video_temp_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
 
         col_v, col_btn = st.columns([2, 1])
         with col_v:
@@ -88,19 +98,29 @@ else:
         if btn_run_video:
             with st.spinner("正在逐帧提取摆球亚像素质心与角度..."):
                 csv_path = "data/theta_t.csv"
-                df_active = track_pendulum_video(video_temp_path, output_csv=csv_path, show_preview=False)
-                st.session_state["active_df"] = df_active
+                if os.path.exists(csv_path):
+                    try:
+                        os.remove(csv_path)
+                    except Exception:
+                        pass
+                df_video = track_pendulum_video(video_temp_path, output_csv=csv_path, show_preview=False)
+                
+                st.session_state["active_df"] = df_video
                 st.session_state["csv_path"] = csv_path
+                st.session_state["run_done"] = True
+                st.session_state["active_mode"] = "video"
     else:
-        st.info("💡 提示：实拍视频模式下请拖入 .mp4 文件；若目前暂无视频，可在左侧切换为【数字仿真演练模式】先睹为快。")
+        st.info("💡 提示：实拍视频模式下请拖入 .mp4 文件；若目前暂无实测视频，可在左侧切换为【数字仿真演练模式】先睹为快。")
 
-if "active_df" in st.session_state:
+# 3. 结果呈现主控模块
+if st.session_state.get("run_done", False) and "active_df" in st.session_state:
     df_data = st.session_state["active_df"]
     target_csv = st.session_state["csv_path"]
+    curr_mode = st.session_state.get("active_mode", "sim")
 
-    with st.spinner("正在执行多模型拟合与 SINDy 方程辨识..."):
+    with st.spinner("正在执行四大模型常微分拟合与 SINDy 微分方程辨识..."):
         fit_results = run_model_comparison(data_path=target_csv, t_max=t_fit_max, L_val=L_input)
-        xi_res, names_res = discover_governing_equation(df_data)
+        xi_res, names_res = discover_governing_equation(df_data, lambda_sparse=0.5)
 
     st.success("🎉 全链路动力学分析执行完毕！")
     st.write("---")
@@ -139,17 +159,22 @@ if "active_df" in st.session_state:
         for name, coef in zip(names_res, xi_res):
             if abs(coef) > 1e-4:
                 eq_terms.append(f"({coef:+.4f}) \\cdot {name}")
-        latex_expr = " \\ddot{\\theta} = " + " ".join(eq_terms)
+        latex_expr = " \\ddot{\\theta} = " + (" ".join(eq_terms) if eq_terms else "0")
         st.latex(latex_expr)
 
         st.markdown("#### 可辨识性阈值消融曲线 (区分 sinθ 与线性 θ 的振幅界限)")
+        run_identifiability_ablation()
         if os.path.exists("figures/identifiability_curve.png"):
             st.image("figures/identifiability_curve.png", width=720)
 
     with tab3:
         st.markdown("#### 时域时序波形与向心耗散相图")
-        if os.path.exists("figures/simulated_trajectory.png"):
+        if curr_mode == "sim" and os.path.exists("figures/simulated_trajectory.png"):
             st.image("figures/simulated_trajectory.png", use_container_width=True)
+        elif curr_mode == "video" and os.path.exists("figures/extracted_trajectory.png"):
+            st.image("figures/extracted_trajectory.png", use_container_width=True)
+            
+        st.markdown("##### 提取的时序数据表 (前 100 行)")
         st.dataframe(df_data.head(100), use_container_width=True)
 
     with tab4:
