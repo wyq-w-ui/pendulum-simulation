@@ -20,7 +20,7 @@ from sindy_discover import discover_governing_equation, run_identifiability_abla
 
 
 def run_full_pipeline(
-    video_path="data/raw_pendulum_video.mp4",
+    video_path="用于测试的视频1.mp4",
     output_csv="data/theta_t.csv",
     mock_csv="data/mock_trajectory.csv",
     t_fit_max=10.0
@@ -56,7 +56,7 @@ def run_full_pipeline(
     print("\n>>> [阶段 3/3] SINDy 稀疏回归动力学方程发现与可辨识性消融...")
     df_data = pd.read_csv(active_csv)
     discover_governing_equation(df_data)
-    run_identifiability_ablation(df_data, num_subsamples=30)
+    run_identifiability_ablation()
     print("[✔] 阶段 3 完成，已生成运动微分方程与可辨识性阈值曲线。")
 
     # ---------------- 最终完成提示 ----------------
